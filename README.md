@@ -1,4 +1,4 @@
-#Mapping Uber price surge in San Francisco
+#Uber Price Surge Heat Map
 
 Interactive heat map with interactive timeline of Uber price surge in San Francisco area. Built with d3.js, leaflet.js, and vis.js
 
