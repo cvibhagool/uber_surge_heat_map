@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<head>
+	<script src="http://d3js.org/queue.v1.min.js"></script>
+
+	<link rel="stylesheet" href="http://cdn.leafletjs.com/leaflet-0.7.3/leaflet.css"/>
+	<script src="http://cdn.leafletjs.com/leaflet-0.7.3/leaflet.js"></script>
+
+	<script src="http://d3js.org/d3.v3.min.js"></script>
+
+	<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/Leaflet.awesome-markers/2.0.2/leaflet.awesome-markers.css">
+	<!-- Modified for custom html code inside markers -->
+	<script src="leaflet.awesome-markers.js"></script>
+
+	<link href="https://cdnjs.cloudflare.com/ajax/libs/vis/3.12.0/vis.css" rel="stylesheet">
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/vis/3.12.0/vis.js"></script>
+
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/underscore.js/1.8.3/underscore.js"></script>
+	
+	<link href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.4/css/bootstrap.min.css" rel="stylesheet">
+
+	<style>
+		#map{
+		  width: 100%;
+		  height: 500px;
+		}
+
+		svg{
+		  position: relative;
+		}
+
+		path{
+		  fill:#000;
+		  fill-opacity: .7;
+		  stroke: #fff;
+		  stroke-width: 1.5px;
+		}
+
+		path:hover{
+			fill: black !important;
+			fill-opacity: 0.5;
+		}
+
+		.vis.timeline .customtime {
+		  background-color: #6E94FF;
+		  width: 2.5px;
+		  cursor: move;
+		  z-index: 1;
+		}
+
+		.glyphicon {
+		    font-size: 40px;
+		}
+
+		.information{
+			padding-top: 10px;
+			padding-right: 50px;
+			padding-bottom: 10px;
+			padding-left: 50px;
+		}
+	</style>
+</head>
+
+<body>
+	<p id = "map"></p>
+	<div class = 'information'>
+		<p id = "visualization"></p>
+		<h4 id = "cur_time" class = "btn btn-primary btn-lg" style = "padding-top: 5px;">Loading......</h4>
+		
+		<div id="carouselButtons" style = "padding-top: 5px;">
+		    <button id = 'button' type="button" class="btn btn-default btn-xs">
+		        <span class="glyphicon glyphicon-play button"></span>
+		     </button>
+		</div>
+	</div>
+</body>
+
+<script>
+	//Load json data files
+	queue()
+	  .defer(d3.json, "nbh_boundary_data.json") //Neighborhood boundaries
+	  .defer(d3.json, "nbh_center_data.json") //Neighborhood centers
+	  .defer(d3.json, "surge_data.json") //Surge
+	  .await(analyze);
+
+	//Create Leaflet layer
+	var layer = L.tileLayer('http://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png', {
+	  attribution: '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, &copy; <a href="http://cartodb.com/attributions">CartoDB</a>'});
+	//Create map with the layer
+	var map = new L.Map("map", {center: [37.77, -122.42], zoom: 12})
+	    .addLayer(layer);
+
+	function analyze(error, nbh_boundary_data, nbh_center_data, surge_data) {
+
+		//Clean date data
+		for (nbh in surge_data){
+			for (i = 0; i < surge_data[nbh].length; i++){
+				original_time = new Date(surge_data[nbh][i].timestamp);
+				//Remove seconds and miliseconds
+				no_sec = new Date(original_time.setSeconds(0,0));
+				//Convert time to PST and store it
+				surge_data[nbh][i].timestamp = new Date(no_sec.setHours(no_sec.getHours() - 7));
+			}
+		}
+		//Get min and max dates
+		var min_max = d3.extent((_.map(_.flatten(_.map(surge_data, _.values)), function(obj) {return obj['timestamp']})));
+		var min_time = min_max[0];
+		var max_time = min_max[1];
+
+		//Draw neighboor boundaries
+		L.geoJson(nbh_boundary_data, {style: style}).addTo(map);
+		//Initilize markers at each location
+		markers = addMarkers(nbh_center_data);
+		//Update markers to data at minimum date
+		updateMarkers(min_time);
+
+		//TIMELINE
+		//Timeline setings
+		var container = document.getElementById('visualization');
+		var items = new vis.DataSet();
+		var options = {
+			showCurrentTime: false,
+			showCustomTime: true,
+			start: min_time,
+			end: max_time,
+			min: min_time,
+			max: max_time,
+			zoomable: false,
+			step: 1,
+			timeAxis: {scale: 'hour', step: 6}
+		}
+		//Initlize timeline
+		var timeline = new vis.Timeline(container, items, options);
+		//Initlize current time to beg minimum date
+		var cur_time = min_time;
+		timeline.setCustomTime(min_time);
+		document.getElementById('cur_time').innerHTML = min_time;
+
+		//On timeline bar change event
+		timeline.on('timechange', function (properties) {
+			//Remove seconds and miliseconds
+			cur_time = new Date(properties.time.setSeconds(0,0));
+			//Convert time to match data
+			step_time = getStepTime(cur_time);
+			//Update current time display
+			document.getElementById('cur_time').innerHTML = cur_time;
+			//Update markers data
+			updateMarkers(step_time);
+	  	});
+
+		//Event binding for button
+		d3.select("button").on('click', pressButton);
+
+		//Functions
+		//Neighboor polygon style
+		function style(feature) {
+		        return {
+		          weight: 1,
+		          opacity: .5,
+		          fillOpacity: 0.7,
+		          className: getClassName(feature.properties.neighborho)
+		        };
+		}
+
+		//Heat color based on surge data
+		function color(value){
+			if (value == '?'){
+				return "rgb(25,25,25)";
+			}
+			else if (value == 1.0){
+				return "rgb(169,169,169)";}
+			else if (value < 1.5){
+				return "rgb(255,69,0)";}
+			else if (value < 2.0){
+				return "rgb(220,20,60)";}
+			else{
+				return "rgb(255,0,0)";}
+		}
+
+		//Update data in markers to a time
+		function updateMarkers(time){
+
+			for (var nbh in markers){
+				new_icon = L.AwesomeMarkers.icon({
+			    markerColor: 'blue',
+			    icon: '',
+			    html: getSurgeData(time,nbh)
+			  	});
+
+			  	marker = markers[nbh];
+				marker.setIcon(new_icon);
+				//Update the fill of the poly based on surge data
+				d3.select("." + getClassName(nbh)).style("fill", color(getSurgeData(time,nbh)));
+			}
+		}
+
+		//Add markers to given nbh locations
+		function addMarkers(nbh_locations){
+
+			function createPopup(nbh){
+				return function() { this.bindPopup(nbh).openPopup() };
+			}
+
+			var markers = {};
+			for (var nbh in nbh_locations){
+			  	y = nbh_locations[nbh]['y'];
+			  	x = nbh_locations[nbh]['x'];
+			  	marker = new L.marker([y,x]);
+				marker.on('mouseover', createPopup(nbh)).addTo(map);
+
+				markers[nbh] = marker;
+			}
+			return markers;
+		}
+
+		//Clean time by removing seconds and miliseconds
+		function getCleanTime(time){
+			return new Date(time.setSeconds(0,0));
+		}
+
+		//Convert nbh names to be CSS friendly
+		function getClassName(nbh){
+			return nbh.split(' ').join('-').replace('/','-');
+		}
+
+		//Get surge data for a give date and nbh
+		function getSurgeData(time,nbh){
+			i_0 = _.findIndex(_.pluck(surge_data[nbh],'timestamp'),function(time_data){return (+time == +time_data);});
+			if (surge_data[nbh][i_0] == null){
+
+				time_1 = new Date(time.setMinutes(time.getMinutes() + 1));
+				i_1 = _.findIndex(_.pluck(surge_data[nbh],'timestamp'),function(time_data){return (+time_1 == +time_data);});
+				if (surge_data[nbh][i_1] == null){
+				
+					time_2 = new Date(time.setMinutes(time.getMinutes() + 2));
+					i_2 = _.findIndex(_.pluck(surge_data[nbh],'timestamp'),function(time_data){return (+time_2 == +time_data);});
+					if (surge_data[nbh][i_2] == null){
+						return '?';
+					}
+					return surge_data[nbh][i_2]['surge_multiplier'].toFixed(1);
+				}
+				return surge_data[nbh][i_1]['surge_multiplier'].toFixed(1);
+			}
+			return surge_data[nbh][i_0]['surge_multiplier'].toFixed(1);
+		}
+
+		//Get time matching data for a given time
+		function getStepTime(time){
+			var minutes = Math.floor(time.getTime()/(60*1000));
+			return new Date(time.getTime() - (minutes % 3)*60*1000);
+		}
+
+		//Variables for keeping track of play/pause status
+		var isPaused = true;
+	    var interval = 100;
+	    var interval_id;
+
+	    function pressButton(){
+	    	if (isPaused) {
+	    		isPaused = false;
+	    		resume();
+	    	}
+	    	else{
+	    		isPaused = true;
+	    		pause();
+	    	}
+	    }
+
+	    function pause(){
+	    	clearInterval(interval_id);
+	    	d3.select('.button').classed('glyphicon-play',true);
+	    	d3.select('.button').classed('glyphicon-pause',false);
+	    }
+
+	    function resume(){
+	    	interval_id = setInterval(tick, interval);
+	    	d3.select('.button').classed('glyphicon-pause',true);
+	    	d3.select('.button').classed('glyphicon-play',false);
+	    }
+
+	    function setTime(){
+			clock_time = getCleanTime(new Date(cur_time.getTime() + 3*60*1000));
+			step_time = getStepTime(clock_time);
+
+			//Update timebar
+			timeline.setCustomTime(step_time);
+			//Update current time in HTML
+			document.getElementById('cur_time').innerHTML = clock_time;
+			//Update marker to the advanced clock
+			updateMarkers(step_time);
+			//Update current time variable to new time
+			cur_time = clock_time;
+	    }
+
+	    function tick(){
+	    	setTime();
+	       	if (cur_time >= max_time){
+	       		pause();
+	       	}
+	    }
+
+	}
+</script>
+
